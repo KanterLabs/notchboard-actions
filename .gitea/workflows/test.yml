@@ -4,5 +4,9 @@ jobs:
   test:
     runs-on: homelab
     steps:
-      - uses: actions/checkout@v4
+      - uses: https://github.com/actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install PyGObject
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends python3-gi gir1.2-glib-2.0 gir1.2-secret-1
       - run: python3 -m unittest
