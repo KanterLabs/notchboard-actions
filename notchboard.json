@@ -1,0 +1,1 @@
+{"id":"dev.kanterlabs.NotchboardActions","name":"Actions","bus-name":"dev.kanterlabs.NotchboardActions","object-path":"/dev/kanterlabs/NotchboardActions","surfaces":["chip","panel","offer","actions"],"exec":["python3","actions.py"]}
