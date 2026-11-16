@@ -2,6 +2,7 @@
 """Notchboard Actions session-bus service."""
 import argparse
 import json
+import os
 import signal
 import sys
 import threading
@@ -21,12 +22,34 @@ XML = f'''<node><interface name="{IFACE}">
 <arg type="s" name="value" direction="in"/></method></interface></node>'''
 
 
-def demo_runs(start):
-    phase = int((time.time()-start)//4) % 5
-    now = time.time()
-    status = ['queued','run','run','low','good'][phase]
-    return [Run('github','1','my-org/example','Tests','main',status,start,
-                now if status in ('good','low') else 0,'https://github.com/my-org/example/actions/runs/1','tests')]
+# Seconds per demo phase; NOTCHBOARD_ACTIONS_DEMO_STEP shortens it for tests.
+DEMO_STEP = float(os.environ.get('NOTCHBOARD_ACTIONS_DEMO_STEP') or 4)
+# Each cycle of eight phases uses new run ids, so every cycle produces a start,
+# a failure and a pass card again. Statuses per phase:
+DEMO = [  # (key, repo, workflow, branch, phases, started offset in seconds)
+    ('t', 'my-org/example', 'Tests', 'main', 'QRRRGGGG', -150),
+    ('b', 'my-org/a-rather-long-repository-name', 'Build and publish the documentation',
+     'feature/a-long-branch-name', 'RRRLLLLL', 0),
+    ('l', 'my-org/api', 'Lint', 'main', 'QQQQQQRR', 0),
+    ('d', 'my-org/site', 'Deploy', '', 'RRRRRRRR', 0),
+]
+DEMO_STATUS = {'Q':'queued', 'R':'run', 'L':'low', 'G':'good'}
+
+
+def demo_runs(start, now=None):
+    now = time.time() if now is None else now
+    step = int((now-start)//DEMO_STEP)
+    cycle, phase = divmod(step, 8)
+    began = start + cycle*8*DEMO_STEP
+    rows = []
+    for key, repo, workflow, branch, phases, offset in DEMO:
+        status = DEMO_STATUS[phases[phase]]
+        ended = began + phases.index(phases[phase])*DEMO_STEP if status in ('good','low') else 0
+        run_id = f'{cycle}{key}'
+        rows.append(Run('github', run_id, repo, workflow, branch, status, began+offset,
+                        ended,
+                        f'https://github.com/{repo}/actions/runs/{run_id}', f'{repo}/{workflow}', 1, began))
+    return rows
 
 
 class Service:
@@ -34,6 +57,9 @@ class Service:
         self.demo, self.start = demo, time.time()
         self.sources = None
         self.model = Model({'github':'https://github.com/actions'})
+        if demo:
+            # A known duration gives the demo's start card a real progress bar.
+            self.model.history[('github','my-org/example','my-org/example/Tests')] = 200
         self.state = json.dumps(self.model.state(time.time()))
         self.bus = None
         self.busy, self.panel, self.pending = False, False, False
@@ -54,13 +80,14 @@ class Service:
                                      GLib.Variant('(sa{sv}as)',(IFACE,{'State':GLib.Variant('s',encoded)},[])))
 
     def render(self, now, rows=None):
+        real = now
         if not self.panel:
             now = int(now // 5) * 5
         try:
             if rows is None:
-                state = self.model.state(now)
+                state = self.model.state(now, (), real)
             else:
-                state = self.model.ingest(rows, now, self.sources.snapshots if self.sources else None)
+                state = self.model.ingest(rows, now, self.sources.snapshots if self.sources else None, real)
         except Exception:
             print('State construction failed', file=sys.stderr)
             return
@@ -72,15 +99,20 @@ class Service:
             value = json.loads(value)
         except ValueError:
             value = None
+        if self.demo:
+            print('activate', id, json.dumps(value), flush=True)
         if id == 'refresh':
             self.next_poll = 0
             self.pending = self.busy
         elif id == 'notchboard.panel' and isinstance(value,bool):
             self.panel = value
             if value:
-                self.model.panel_open()
                 self.next_poll = 0
                 self.pending = self.busy
+            else:
+                # Failures stay listed while the panel is open; closing it
+                # marks them seen and takes their dots away.
+                self.model.panel_open()
         elif id == 'notchboard.offer' and isinstance(value,dict):
             card = self.model.offers.current
             if card and value.get('id') == card['id'] and value.get('result') in ('dismissed','opened','expired','replaced','suppressed'):

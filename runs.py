@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 import json
+import re
 import time
 from urllib.parse import urlsplit
 
@@ -15,8 +16,20 @@ def stamp(value):
         return 0.0
 
 
+# Notchboard contract v1: http(s), a host, no user info, no whitespace, at most
+# 2048 characters. Anything else is dropped here, because one bad uri makes
+# Notchboard drop the whole State document.
+_URI = re.compile(r'^https?://[^\s/?#@]+(?:[/?#]\S*)?$', re.I)
+
+
 def uri(value):
-    return value if isinstance(value, str) and urlsplit(value).scheme in ('http', 'https') else ''
+    return value if isinstance(value, str) and len(value) <= 2048 and _URI.match(value) else ''
+
+
+# Notchboard allows one new offer id per 10 seconds, timed when it renders
+# (up to 250 ms after a State change); keep a margin so cards aren't suppressed.
+OFFER_GAP = 11
+CARD_GRACE = 60
 
 
 @dataclass(frozen=True)
@@ -75,6 +88,11 @@ def diff(prev, cur, now, since=None):
     return events
 
 
+def line(branch, detail):
+    branch = branch.strip()
+    return f'{branch} · {detail}' if branch else detail
+
+
 def clock(seconds):
     seconds = max(0, int(seconds))
     return f'{seconds // 60}:{seconds % 60:02}'
@@ -109,11 +127,11 @@ class Offers:
         self.queue.sort(key=lambda e: {'low':0, 'good':1, 'start':2}[e[0]])
         if now >= self.expires:
             self.current = None
-        if self.queue and now-self.last >= 10:
+        if self.queue and now-self.last >= OFFER_GAP:
             kind, r, key = self.queue.pop(0)
             seconds = 10 if kind == 'low' else 6
             title = f'{r.repo} · {r.workflow}'
-            text = f'{r.branch} · started'
+            text = line(r.branch, 'started')
             card = {'id':key, 'title':title, 'text':text, 'seconds':seconds}
             if r.url:
                 card['uri'] = r.url
@@ -121,8 +139,12 @@ class Offers:
                 card.update(ring=progress(r, now, history), progress=progress(r, now, history))
             else:
                 card.update(title=title + (' failed' if kind == 'low' else ''), tone=kind,
-                            text=f'{r.branch} · ' + (f'after {clock(r.duration)}' if kind == 'low' else f'passed in {clock(r.duration)}'))
-            self.current, self.last, self.expires = card, now, now+seconds
+                            icon='dialog-error-symbolic' if kind == 'low' else 'object-select-symbolic',
+                            text=line(r.branch, f'after {clock(r.duration)}' if kind == 'low' else f'passed in {clock(r.duration)}'))
+            # Notchboard times the card itself (pausing while it is hovered) and
+            # reports its fate; withdrawing it at `seconds` would cut it short
+            # and lose the result. This is only a fallback if no result comes.
+            self.current, self.last, self.expires = card, now, now+seconds+CARD_GRACE
         if self.current and self.current['id'].startswith('start:'):
             for r in runs.values():
                 if self.current['id'] == f'start:{r.source}:{r.id}:{r.attempt}':
@@ -130,7 +152,7 @@ class Offers:
         return self.current
 
 
-def build_state(runs, events, now, *, offers=None, history=None, cleared=None, links=None, errors=()):
+def build_state(runs, events, now, *, offers=None, history=None, cleared=None, links=None, errors=(), offer_now=None):
     history, cleared, links = history or {}, cleared or set(), links or {}
     visible = [r for r in runs.values() if r.status in ('run','queued') or
                (r.status == 'low' and r.key not in cleared and max(0, now-r.ended) < 600) or
@@ -138,7 +160,8 @@ def build_state(runs, events, now, *, offers=None, history=None, cleared=None, l
     items = []
     for r in sorted((r for r in visible if r.status != 'good'), key=lambda r: ({'run':0,'queued':1,'low':2}[r.status], r.started))[:10]:
         row = {'type':'row', 'title':f'{r.repo} · {r.workflow}',
-               'subtitle':f'{r.branch} · ' + ('queued' if r.status == 'queued' else clock(r.duration if r.status == 'low' else now-r.started)),
+               'subtitle':line(r.branch, 'queued' if r.status == 'queued' else
+                               clock(r.duration if r.status == 'low' else now-r.started) if r.started else 'running'),
                'hint': 'GitHub' if r.source == 'github' else 'Gitea',
                'ring':progress(r, now, history), 'tone':'low' if r.status == 'low' else 'normal'}
         if r.url:
@@ -156,7 +179,7 @@ def build_state(runs, events, now, *, offers=None, history=None, cleared=None, l
         state['chip'] = {'where':'notch','dots':[r.status for r in sorted(visible,key=lambda r:(r.status not in ('run','queued'), -r.started))[:8]],
                          'label':', '.join(f'{n} {label}' for n,label in counts if n)}
     if offers:
-        card = offers.update(events, runs, now, history)
+        card = offers.update(events, runs, now if offer_now is None else offer_now, history)
         if card:
             state['offer'] = dict(card)
     # Bound untrusted server strings, then trim rows to fit the byte budget.
@@ -210,14 +233,16 @@ class Model:
         self.polled = {}
         self.offers, self.links, self.errors = Offers(), links or {}, ()
 
-    def ingest(self, runs, now, snapshots=None):
+    def ingest(self, runs, now, snapshots=None, offer_now=None):
         current = {}
         for r in runs:
             if r.key not in current or r.attempt >= current[r.key].attempt:
                 current[r.key] = r
         events = []
         if snapshots is None:
-            snapshots = {(r.source, r.repo): now for r in runs}
+            # Fetch times are real; `now` may be the quantized display clock.
+            fetched = now if offer_now is None else offer_now
+            snapshots = {(r.source, r.repo): fetched for r in runs}
         for endpoint, fetched in snapshots.items():
             previous = self.polled.get(endpoint, self.polled.get((endpoint[0], '*')))
             subset = {k:r for k,r in current.items() if (r.source, r.repo) == endpoint or (endpoint == (r.source, '*'))}
@@ -236,11 +261,11 @@ class Model:
             if r.status == 'good' and r.duration:
                 self.history[(r.source,r.repo,r.workflow_id)] = r.duration
         self.runs = current
-        return self.state(now, events)
+        return self.state(now, events, offer_now)
 
     def panel_open(self):
         self.cleared.update({r.key:time.time() for r in self.runs.values() if r.status == 'low'})
 
-    def state(self, now, events=()):
+    def state(self, now, events=(), offer_now=None):
         return build_state(self.runs, events, now, offers=self.offers, history=self.history,
-                           cleared=self.cleared, links=self.links, errors=self.errors)
+                           cleared=self.cleared, links=self.links, errors=self.errors, offer_now=offer_now)

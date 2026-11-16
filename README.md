@@ -27,8 +27,10 @@ python3 actions.py --once                 # real poll, JSON, exits nonzero on er
 ```
 
 `make state` reads the live service. Do not start two copies on the same bus.
-The demo repeats queued → running → failure → success every 20 seconds; synthetic
-runs are deliberately short, so success produces dots but no success card.
+The demo shows four synthetic runs in a 32-second cycle with new run ids each
+time, so every cycle produces a start, a failure and a success card (about 11
+seconds apart, Notchboard's limit). `NOTCHBOARD_ACTIONS_DEMO_STEP=2` halves the
+phase length; in demo mode every `Activate` is printed to stdout.
 State may contain private repository names: do not share real `--once` output.
 Tests use only synthetic placeholders and need neither GNOME nor credentials.
 
@@ -75,7 +77,7 @@ immediate poll. Both sources run concurrently outside the GLib thread. Backoff a
 retains its own snapshot and a generic panel warning; active or queued runs
 are dropped after five minutes without a successful fetch.
 
-Failed dots persist for 10 minutes or until the panel is opened; successful dots
+Failed dots persist for 10 minutes or until the panel is closed after being opened; successful dots
 persist 30 seconds. Success cards require a run longer than 2 minutes. Failures
 have priority in the offer queue; offers are separated by at least 10 seconds.
 Queued start cards are discarded if the run has finished. Progress estimates
