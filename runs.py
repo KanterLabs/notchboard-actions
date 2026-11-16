@@ -130,17 +130,20 @@ class Offers:
         if self.queue and now-self.last >= OFFER_GAP:
             kind, r, key = self.queue.pop(0)
             seconds = 10 if kind == 'low' else 6
-            title = f'{r.repo} · {r.workflow}'
-            text = line(r.branch, 'started')
+            # The verdict leads the title so an ellipsis can never hide it; the
+            # repository and branch share the second line.
+            where = ' · '.join(part for part in (r.repo.rsplit('/', 1)[-1].strip(), r.branch.strip()) if part)
+            title = r.workflow
+            text = line(where, 'started')
             card = {'id':key, 'title':title, 'text':text, 'seconds':seconds}
             if r.url:
                 card['uri'] = r.url
             if kind == 'start':
                 card.update(ring=progress(r, now, history), progress=progress(r, now, history))
             else:
-                card.update(title=title + (' failed' if kind == 'low' else ''), tone=kind,
+                card.update(title=f"{title} {'failed' if kind == 'low' else 'passed'}", tone=kind,
                             icon='dialog-error-symbolic' if kind == 'low' else 'object-select-symbolic',
-                            text=line(r.branch, f'after {clock(r.duration)}' if kind == 'low' else f'passed in {clock(r.duration)}'))
+                            text=line(where, f'after {clock(r.duration)}' if kind == 'low' else f'in {clock(r.duration)}'))
             # Notchboard times the card itself (pausing while it is hovered) and
             # reports its fate; withdrawing it at `seconds` would cut it short
             # and lose the result. This is only a fallback if no result comes.

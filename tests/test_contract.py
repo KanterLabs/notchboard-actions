@@ -32,7 +32,8 @@ class ContractTests(unittest.TestCase):
         m.ingest([run(branch='')], 200)
         state = m.ingest([run('low', branch='', ended=210)], 210)
         self.assertEqual(state['offer']['icon'], 'dialog-error-symbolic')
-        self.assertEqual(state['offer']['text'], 'after 1:50')
+        self.assertEqual(state['offer']['title'], 'Tests failed')
+        self.assertEqual(state['offer']['text'], 'example · after 1:50')
         self.assertEqual(state['panel']['items'][0]['subtitle'], '1:50')
 
     def test_unknown_start_time_has_no_clock(self):
