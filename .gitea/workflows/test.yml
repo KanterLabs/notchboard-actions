@@ -2,7 +2,7 @@ name: Tests
 on: [push, pull_request]
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: homelab
     steps:
       - uses: actions/checkout@v4
       - run: python3 -m unittest
