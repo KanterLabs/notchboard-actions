@@ -175,7 +175,7 @@ class Sources:
                 self.config_errors.append(name)
         self.schedule, self.snapshots, self.last_success = {}, {}, {}
         self.last = {}
-        self.links = {'github':'https://github.com/actions'}
+        self.links = {} if cfg.get('github',{}).get('enabled') is False else {'github':'https://github.com/actions'}
         if cfg.get('gitea',{}).get('url'):
             self.links['gitea'] = cfg['gitea']['url'].rstrip('/') + '/-/actions'
 
